@@ -1,23 +1,29 @@
-# TODO: Add tests that show proper migration of the strategy to a newer one
-#       Use another copy of the strategy to simulate the migration
-#       Show that nothing is lost!
-
-import pytest
+from brownie import config
 
 
-def test_migration(
-    token, vault, strategy, amount, Strategy, strategist, gov, user, RELATIVE_APPROX
-):
-    # Deposit to the vault and harvest
-    token.approve(vault.address, amount, {"from": user})
-    vault.deposit(amount, {"from": user})
-    strategy.harvest()
-    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
+def test_migration(gov, strategyFactory, vault, token, tokenWhale, strategist):
+    strategyOld = strategyFactory(vault)
 
-    # migrate to a new strategy
-    new_strategy = strategist.deploy(Strategy, vault)
-    strategy.migrate(new_strategy.address, {"from": gov})
-    assert (
-        pytest.approx(new_strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX)
-        == amount
-    )
+    decimals = token.decimals()
+    token.approve(vault, 2 ** 256 - 1, {"from": tokenWhale})
+    vault.setDepositLimit(2 ** 256 - 1, {"from": gov})
+    vault.addStrategy(strategyOld, 10_000, 0, 2 ** 256 - 1, 0, {"from": gov})
+    vault.deposit(100 * (10 ** decimals), {"from": tokenWhale})
+
+    strategyOld.harvest({"from": gov})
+
+    estimatedTotalAssetsStrategyOld = strategyOld.estimatedTotalAssets()
+
+    strategyNext = strategyFactory(vault)
+
+    vault.migrateStrategy(strategyOld, strategyNext, {"from": gov})
+
+    estimatedTotalAssetsStrategyNext = strategyNext.estimatedTotalAssets()
+
+    assert estimatedTotalAssetsStrategyNext + 1 >= estimatedTotalAssetsStrategyOld
+
+    strategyNext.harvest({"from": strategist})
+
+    strategyNext.harvest({"from": strategist})
+
+    assert vault.strategies(strategyNext).dict()["totalLoss"] <= 1
